@@ -20,7 +20,7 @@ A VS Code workspace that gives you a custom **GitHub Copilot agent** and **skill
 
 **One click** — VS Code clones the repo and opens the correct root folder automatically:
 
-[![Open in VS Code](https://img.shields.io/badge/Open%20in-VS%20Code-blue?logo=visualstudiocode)](vscode://vscode.git/clone?url=https://github.com/pvolu-vz/OAA_Agent.git)
+[![Open in VS Code](https://img.shields.io/badge/Open%20in-VS%20Code-blue?logo=visualstudiocode)](https://vscode.dev/redirect?url=vscode://vscode.git/clone?url%3Dhttps://github.com/pvolu-vz/OAA_Agent.git)
 
 <details>
 <summary>Prefer the terminal?</summary>
