@@ -1,4 +1,6 @@
 .env
+.env.*
+!.env*.example
 integrations/*/Samples/
 venv/
 .DS_Store

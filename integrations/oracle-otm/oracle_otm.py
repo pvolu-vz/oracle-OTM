@@ -11,6 +11,7 @@ import argparse
 import logging
 import os
 import sys
+from datetime import datetime, timezone
 
 from dotenv import load_dotenv
 from oaaclient.client import OAAClient, OAAClientError
@@ -37,14 +38,18 @@ def load_config(args):
         # OAA
         "provider_name": args.provider_name or os.getenv("PROVIDER_NAME", "Oracle OTM"),
         "datasource_name": args.datasource_name or os.getenv("DATASOURCE_NAME", "Oracle OTM"),
-        # Athena ODBC
+        # Athena connection
+        "athena_auth_type": os.getenv("ATHENA_AUTH_TYPE", "odbc"),  # "odbc" or "iam"
         "odbc_dsn": args.odbc_dsn or os.getenv("ATHENA_ODBC_DSN"),
         "athena_region": args.athena_region or os.getenv("ATHENA_REGION", "us-east-1"),
         "athena_s3_output": args.athena_s3_output or os.getenv("ATHENA_S3_OUTPUT"),
         "athena_catalog": args.athena_catalog or os.getenv("ATHENA_CATALOG", "AwsDataCatalog"),
         "athena_database": args.athena_database or os.getenv("ATHENA_DATABASE", "dtl_otm"),
         "athena_workgroup": args.athena_workgroup or os.getenv("ATHENA_WORKGROUP", "datalake"),
-        # Azure AD auth for Athena
+        # IAM credentials (used when ATHENA_AUTH_TYPE=iam)
+        "aws_access_key_id": os.getenv("AWS_ACCESS_KEY_ID"),
+        "aws_secret_access_key": os.getenv("AWS_SECRET_ACCESS_KEY"),
+        # Azure AD auth for Athena (used when ATHENA_AUTH_TYPE=odbc)
         "azure_ad_client_id": os.getenv("AZURE_AD_CLIENT_ID"),
         "azure_ad_client_secret": os.getenv("AZURE_AD_CLIENT_SECRET"),
         "azure_ad_tenant_id": os.getenv("AZURE_AD_TENANT_ID"),
@@ -55,8 +60,39 @@ def load_config(args):
 
 
 # ---------------------------------------------------------------------------
-# Data extraction via Athena ODBC
+# Data extraction via Athena
 # ---------------------------------------------------------------------------
+def get_pyathena_connection(cfg):
+    """Create a pyathena connection using IAM credentials — no ODBC driver needed."""
+    try:
+        from pyathena import connect as athena_connect
+    except ImportError:
+        log.error("pyathena is not installed. Run: pip install pyathena boto3")
+        sys.exit(1)
+
+    if not cfg["aws_access_key_id"] or not cfg["aws_secret_access_key"]:
+        log.error("AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must be set when ATHENA_AUTH_TYPE=iam")
+        sys.exit(1)
+
+    if not cfg["athena_s3_output"]:
+        log.error("ATHENA_S3_OUTPUT must be set when ATHENA_AUTH_TYPE=iam")
+        sys.exit(1)
+
+    log.info("Connecting to Athena via pyathena IAM (region=%s, database=%s)",
+             cfg["athena_region"], cfg["athena_database"])
+
+    from pyathena import connect as athena_connect
+    conn = athena_connect(
+        aws_access_key_id=cfg["aws_access_key_id"],
+        aws_secret_access_key=cfg["aws_secret_access_key"],
+        region_name=cfg["athena_region"],
+        s3_staging_dir=cfg["athena_s3_output"],
+        schema_name=cfg["athena_database"],
+        work_group=cfg["athena_workgroup"],
+    )
+    return conn
+
+
 def get_odbc_connection(cfg):
     """Create an ODBC connection to AWS Athena via the Simba driver."""
     try:
@@ -148,6 +184,23 @@ def fetch_user_role_mappings(conn, database):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def to_rfc3339(value):
+    """Convert an Athena timestamp string to RFC 3339 (e.g. '2026-03-15 08:22:10' → '2026-03-15T08:22:10Z')."""
+    if not value:
+        return None
+    s = str(value).strip()
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            return dt.replace(tzinfo=timezone.utc).isoformat()
+        except ValueError:
+            continue
+    return s  # already formatted or unparseable — pass through
+
+
+# ---------------------------------------------------------------------------
 # OAA payload assembly
 # ---------------------------------------------------------------------------
 def build_oaa_payload(users, role_mappings, cfg):
@@ -236,7 +289,9 @@ def build_oaa_payload(users, role_mappings, cfg):
         for ts_field in ("last_login_date", "password_last_changed_date", "insert_date", "update_date"):
             val = user.get(ts_field)
             if val is not None:
-                local_user.set_property(ts_field, str(val))
+                rfc_val = to_rfc3339(val)
+                if rfc_val:
+                    local_user.set_property(ts_field, rfc_val)
 
         # Resolve user's role assignments via USER_ROLE_ACR_ROLE
         user_role_gid = user.get("user_role_gid")
@@ -258,10 +313,17 @@ def build_oaa_payload(users, role_mappings, cfg):
 # ---------------------------------------------------------------------------
 # Push to Veza
 # ---------------------------------------------------------------------------
-def push_to_veza(cfg, app, dry_run=False):
+def push_to_veza(cfg, app, dry_run=False, save_json=False):
     """Push the CustomApplication payload to Veza."""
     if dry_run:
         log.info("[DRY RUN] Payload built successfully — skipping push to Veza")
+        if save_json:
+            import json
+            payload = app.get_payload()
+            out_path = "oaa_payload.json"
+            with open(out_path, "w") as f:
+                json.dump(payload, f, indent=2, default=str)
+            log.info("[DRY RUN] Payload saved to %s", out_path)
         return
 
     veza_con = OAAClient(url=cfg["veza_url"], api_key=cfg["veza_api_key"])
@@ -325,6 +387,7 @@ Examples:
     parser.add_argument("--athena-database", help="Athena database containing OTM tables (default: dtl_otm)")
     parser.add_argument("--athena-workgroup", help="Athena workgroup (default: datalake)")
     parser.add_argument("--dry-run", action="store_true", help="Build payload but skip Veza push")
+    parser.add_argument("--save-json", action="store_true", help="Save OAA payload as JSON for inspection")
     parser.add_argument(
         "--log-level",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
@@ -353,16 +416,19 @@ def main():
     # 1. Load configuration
     cfg = load_config(args)
 
-    if not cfg["veza_url"] or not cfg["veza_api_key"]:
+    if not args.dry_run and (not cfg["veza_url"] or not cfg["veza_api_key"]):
         log.error("VEZA_URL and VEZA_API_KEY are required (set via CLI, env var, or .env)")
         sys.exit(1)
 
-    if not cfg["odbc_dsn"] and not cfg["athena_s3_output"]:
+    if cfg["athena_auth_type"] == "odbc" and not cfg["odbc_dsn"] and not cfg["athena_s3_output"]:
         log.error("Either --odbc-dsn or ATHENA_S3_OUTPUT (+ Azure AD credentials) must be set")
         sys.exit(1)
 
     # 2. Connect to Athena
-    conn = get_odbc_connection(cfg)
+    if cfg["athena_auth_type"] == "iam":
+        conn = get_pyathena_connection(cfg)
+    else:
+        conn = get_odbc_connection(cfg)
     log.info("Connected to Athena successfully")
 
     try:
@@ -379,7 +445,7 @@ def main():
         app = build_oaa_payload(users, role_mappings, cfg)
 
         # 5. Push to Veza
-        push_to_veza(cfg, app, dry_run=args.dry_run)
+        push_to_veza(cfg, app, dry_run=args.dry_run, save_json=args.save_json)
 
     finally:
         conn.close()
