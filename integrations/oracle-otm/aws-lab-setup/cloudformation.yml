@@ -1,0 +1,325 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Oracle OTM Veza OAA Integration — Synthetic Lab Environment.
+  Creates an S3 data lake, Glue catalog (dtl_otm database), Athena workgroup,
+  and a least-privilege IAM user for ODBC testing without Azure AD.
+
+# ---------------------------------------------------------------------------
+# Parameters
+# ---------------------------------------------------------------------------
+Parameters:
+  LabPrefix:
+    Type: String
+    Default: otm-lab
+    Description: >
+      Short prefix used to namespace all resource names.
+      Must be lowercase with hyphens only. Must be globally unique
+      (S3 bucket names are global). Change if "otm-lab" is already taken.
+    AllowedPattern: "^[a-z][a-z0-9-]{2,20}$"
+    ConstraintDescription: "Lowercase letters, numbers, and hyphens only (3-21 chars, must start with a letter)."
+
+  AthenaWorkgroupName:
+    Type: String
+    Default: lab
+    Description: Name of the Athena workgroup to create.
+
+# ---------------------------------------------------------------------------
+# Resources
+# ---------------------------------------------------------------------------
+Resources:
+
+  # ---------- S3: Data Lake --------------------------------------------------
+  DataLakeBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${LabPrefix}-datalake"
+      VersioningConfiguration:
+        Status: Enabled
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireNoncurrentVersions
+            Status: Enabled
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 90
+
+  # ---------- S3: Athena Query Results ---------------------------------------
+  QueryResultsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub "${LabPrefix}-athena-results"
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireQueryResults
+            Status: Enabled
+            ExpirationInDays: 30
+
+  # ---------- Glue: Database -------------------------------------------------
+  GlueDatabase:
+    Type: AWS::Glue::Database
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseInput:
+        Name: dtl_otm
+        Description: Synthetic Oracle OTM data lake database for Veza OAA lab testing
+
+  # ---------- Glue: GL_USER table --------------------------------------------
+  GlueTableGlUser:
+    Type: AWS::Glue::Table
+    DependsOn: GlueDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: dtl_otm
+      TableInput:
+        Name: gl_user
+        Description: Oracle OTM GL_USER — user accounts (synthetic lab data)
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          "skip.header.line.count": "1"
+          "classification": "csv"
+        StorageDescriptor:
+          Location: !Sub "s3://${LabPrefix}-datalake/data/gl_user/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            Parameters:
+              "field.delim": ","
+              "serialization.format": ","
+          Columns:
+            # 13 columns currently selected by fetch_users() in oracle_otm.py
+            - Name: user_gid
+              Type: string
+              Comment: "Internal GID — unique identifier (e.g. OTM.GID_100001)"
+            - Name: user_xid
+              Type: string
+              Comment: "External login ID (e.g. USR_JDOE_001)"
+            - Name: domain_name
+              Type: string
+            - Name: first_name
+              Type: string
+            - Name: last_name
+              Type: string
+            - Name: middle_name
+              Type: string
+            - Name: email_address
+              Type: string
+            - Name: is_active
+              Type: string
+              Comment: "Y or N"
+            - Name: is_locked_out
+              Type: string
+              Comment: "Y or N"
+            - Name: last_login_date
+              Type: string
+              Comment: "ISO timestamp string"
+            - Name: password_last_changed_date
+              Type: string
+              Comment: "ISO timestamp string"
+            - Name: insert_date
+              Type: string
+              Comment: "ISO timestamp string"
+            - Name: update_date
+              Type: string
+              Comment: "ISO timestamp string"
+            # 14th column — FK into user_role_acr_role.user_role_gid
+            # NOTE: oracle_otm.py:fetch_users() does not SELECT this column yet,
+            # so role assignments will show 0 until the query is fixed to include it.
+            - Name: user_role_gid
+              Type: string
+              Comment: "FK to user_role_acr_role.user_role_gid — not yet selected by fetch_users()"
+
+  # ---------- Glue: USER_ROLE_ACR_ROLE table ---------------------------------
+  GlueTableUserRoleAcrRole:
+    Type: AWS::Glue::Table
+    DependsOn: GlueDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: dtl_otm
+      TableInput:
+        Name: user_role_acr_role
+        Description: Oracle OTM USER_ROLE_ACR_ROLE — user-to-role mappings (synthetic lab data)
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          "skip.header.line.count": "1"
+          "classification": "csv"
+        StorageDescriptor:
+          Location: !Sub "s3://${LabPrefix}-datalake/data/user_role_acr_role/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            Parameters:
+              "field.delim": ","
+              "serialization.format": ","
+          Columns:
+            - Name: user_role_gid
+              Type: string
+              Comment: "OTM user-role GID — FK from gl_user.user_role_gid"
+            - Name: user_role_xid
+              Type: string
+              Comment: "Human-readable user-role XID"
+            - Name: acr_role_gid
+              Type: string
+              Comment: "Access Control Role GID (e.g. OTM.ACR_PLANNER)"
+            - Name: acr_role_xid
+              Type: string
+              Comment: "Access Control Role XID / display name (e.g. PLANNER)"
+            - Name: domain_name
+              Type: string
+
+  # ---------- Athena: Workgroup ----------------------------------------------
+  AthenaWorkgroup:
+    Type: AWS::Athena::WorkGroup
+    Properties:
+      Name: !Ref AthenaWorkgroupName
+      Description: Lab workgroup for Oracle OTM Veza OAA integration testing
+      State: ENABLED
+      WorkGroupConfiguration:
+        ResultConfiguration:
+          OutputLocation: !Sub "s3://${LabPrefix}-athena-results/"
+          EncryptionConfiguration:
+            EncryptionOption: SSE_S3
+        EnforceWorkGroupConfiguration: true
+        PublishCloudWatchMetricsEnabled: false
+
+  # ---------- IAM: User + Access Key + Policy --------------------------------
+  OtmLabIamUser:
+    Type: AWS::IAM::User
+    Properties:
+      UserName: !Sub "${LabPrefix}-reader"
+      Tags:
+        - Key: Purpose
+          Value: OTM-Veza-OAA-Lab
+        - Key: ManagedBy
+          Value: CloudFormation
+
+  OtmLabAccessKey:
+    Type: AWS::IAM::AccessKey
+    Properties:
+      UserName: !Ref OtmLabIamUser
+
+  OtmLabIamPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub "${LabPrefix}-athena-read-policy"
+      Users:
+        - !Ref OtmLabIamUser
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+
+          - Sid: AthenaQueryExecution
+            Effect: Allow
+            Action:
+              - athena:StartQueryExecution
+              - athena:GetQueryExecution
+              - athena:GetQueryResults
+              - athena:GetWorkGroup
+              - athena:ListWorkGroups
+              - athena:StopQueryExecution
+            Resource:
+              - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/${AthenaWorkgroupName}"
+              # primary workgroup needed by some ODBC driver versions
+              - !Sub "arn:aws:athena:${AWS::Region}:${AWS::AccountId}:workgroup/primary"
+
+          - Sid: GlueCatalogRead
+            Effect: Allow
+            Action:
+              - glue:GetDatabase
+              - glue:GetDatabases
+              - glue:GetTable
+              - glue:GetTables
+              - glue:GetPartition
+              - glue:GetPartitions
+              - glue:BatchGetPartition
+            Resource:
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:catalog"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/dtl_otm"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/dtl_otm/gl_user"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/dtl_otm/user_role_acr_role"
+
+          - Sid: S3DataLakeRead
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource:
+              - !Sub "arn:aws:s3:::${LabPrefix}-datalake"
+              - !Sub "arn:aws:s3:::${LabPrefix}-datalake/*"
+
+          - Sid: S3QueryResultsReadWrite
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+              - s3:DeleteObject
+            Resource:
+              - !Sub "arn:aws:s3:::${LabPrefix}-athena-results"
+              - !Sub "arn:aws:s3:::${LabPrefix}-athena-results/*"
+
+# ---------------------------------------------------------------------------
+# Outputs
+# ---------------------------------------------------------------------------
+Outputs:
+
+  DataLakeBucketName:
+    Description: S3 bucket containing synthetic OTM CSV data
+    Value: !Sub "${LabPrefix}-datalake"
+
+  QueryResultsBucketName:
+    Description: S3 bucket for Athena query results
+    Value: !Sub "${LabPrefix}-athena-results"
+
+  GlueDatabaseName:
+    Description: Glue / Athena database name
+    Value: dtl_otm
+
+  AthenaWorkgroupName:
+    Description: Athena workgroup name
+    Value: !Ref AthenaWorkgroupName
+
+  IamUserName:
+    Description: IAM user for ODBC authentication
+    Value: !Ref OtmLabIamUser
+
+  AccessKeyId:
+    Description: "IAM access key ID — use as AwsAccessKey in the ODBC DSN"
+    Value: !Ref OtmLabAccessKey
+
+  SecretAccessKey:
+    Description: >
+      IAM secret access key — use as AwsSecretKey in the ODBC DSN.
+      Retrieve from the AWS Console (CloudFormation > Stacks > Outputs)
+      since NoEcho=true prevents CLI retrieval.
+    Value: !GetAtt OtmLabAccessKey.SecretAccessKey
+    # NoEcho prevents the secret from appearing in CLI describe-stacks output.
+    # Retrieve it via the AWS Console > CloudFormation > stack > Outputs tab.
+
+  GlUserS3Prefix:
+    Description: Upload gl_user_sample.csv to this S3 prefix
+    Value: !Sub "s3://${LabPrefix}-datalake/data/gl_user/"
+
+  UserRoleAcrRoleS3Prefix:
+    Description: Upload user_role_acr_role_sample.csv to this S3 prefix
+    Value: !Sub "s3://${LabPrefix}-datalake/data/user_role_acr_role/"

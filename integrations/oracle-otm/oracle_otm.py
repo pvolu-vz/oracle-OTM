@@ -102,6 +102,7 @@ def fetch_users(conn, database):
         SELECT
             user_gid,
             user_xid,
+            user_role_gid,
             domain_name,
             first_name,
             last_name,
