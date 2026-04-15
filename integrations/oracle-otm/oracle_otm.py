@@ -10,6 +10,7 @@ and pushes User → Role mappings to Veza as a Custom Application.
 import argparse
 import logging
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from logging.handlers import TimedRotatingFileHandler
@@ -88,6 +89,16 @@ def load_config(args):
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _validate_identifier(name: str) -> str:
+    """Validate that a database/schema identifier contains only safe characters."""
+    if not re.match(r"^[A-Za-z0-9_]+$", name):
+        raise ValueError(f"Unsafe identifier: {name!r}")
+    return name
+
+
+# ---------------------------------------------------------------------------
 # Data extraction via Athena
 # ---------------------------------------------------------------------------
 def get_pyathena_connection(cfg):
@@ -109,7 +120,6 @@ def get_pyathena_connection(cfg):
     log.info("Connecting to Athena via pyathena IAM (region=%s, database=%s)",
              cfg["athena_region"], cfg["athena_database"])
 
-    from pyathena import connect as athena_connect
     conn = athena_connect(
         aws_access_key_id=cfg["aws_access_key_id"],
         aws_secret_access_key=cfg["aws_secret_access_key"],
@@ -162,6 +172,7 @@ def get_odbc_connection(cfg):
 
 def fetch_users(conn, database):
     """Fetch user records from GL_USER."""
+    db = _validate_identifier(database)
     query = f"""
         SELECT
             user_gid,
@@ -177,7 +188,7 @@ def fetch_users(conn, database):
             password_last_changed_date,
             insert_date,
             update_date
-        FROM {database}.gl_user
+        FROM {db}.gl_user
     """
     log.info("Querying GL_USER from %s ...", database)
     cursor = conn.cursor()
@@ -191,11 +202,12 @@ def fetch_users(conn, database):
 
 def fetch_user_role_grants(conn, database):
     """Fetch active user-to-role grants from USER_ROLE_GRANT."""
+    db = _validate_identifier(database)
     query = f"""
         SELECT
             user_gid,
             user_role_gid
-        FROM {database}.user_role_grant
+        FROM {db}.user_role_grant
         WHERE is_active = 'Y'
     """
     log.info("Querying USER_ROLE_GRANT from %s ...", database)
@@ -210,6 +222,7 @@ def fetch_user_role_grants(conn, database):
 
 def fetch_user_role_mappings(conn, database):
     """Fetch user-role to access-control-role mappings from USER_ROLE_ACR_ROLE."""
+    db = _validate_identifier(database)
     query = f"""
         SELECT
             user_role_gid,
@@ -217,7 +230,7 @@ def fetch_user_role_mappings(conn, database):
             acr_role_gid,
             acr_role_xid,
             domain_name
-        FROM {database}.user_role_acr_role
+        FROM {db}.user_role_acr_role
     """
     log.info("Querying USER_ROLE_ACR_ROLE from %s ...", database)
     cursor = conn.cursor()
