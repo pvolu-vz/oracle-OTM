@@ -166,7 +166,6 @@ def fetch_users(conn, database):
         SELECT
             user_gid,
             user_xid,
-            default_user_role_gid,
             domain_name,
             first_name,
             last_name,
@@ -187,6 +186,25 @@ def fetch_users(conn, database):
     columns = [desc[0] for desc in cursor.description]
     rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
     log.info("Retrieved %d user(s) from GL_USER", len(rows))
+    return rows
+
+
+def fetch_user_role_grants(conn, database):
+    """Fetch active user-to-role grants from USER_ROLE_GRANT."""
+    query = f"""
+        SELECT
+            user_gid,
+            user_role_gid
+        FROM {database}.user_role_grant
+        WHERE is_active = 'Y'
+    """
+    log.info("Querying USER_ROLE_GRANT from %s ...", database)
+    cursor = conn.cursor()
+    cursor.execute(query)
+
+    columns = [desc[0] for desc in cursor.description]
+    rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+    log.info("Retrieved %d active grant(s) from USER_ROLE_GRANT", len(rows))
     return rows
 
 
@@ -231,7 +249,7 @@ def to_rfc3339(value):
 # ---------------------------------------------------------------------------
 # OAA payload assembly
 # ---------------------------------------------------------------------------
-def build_oaa_payload(users, role_mappings, cfg):
+def build_oaa_payload(users, role_grants, role_mappings, cfg):
     """Build the Veza CustomApplication from OTM user and role data."""
     app = CustomApplication(
         name=cfg["datasource_name"],
@@ -254,6 +272,14 @@ def build_oaa_payload(users, role_mappings, cfg):
 
     # -- Custom role properties --
     app.property_definitions.define_local_role_property("domain_name", OAAPropertyType.STRING)
+
+    # -- Build a lookup: user_gid → list of user_role_gids (from active grants) --
+    user_roles_lookup = {}  # user_gid → [user_role_gid, ...]
+    for grant in role_grants:
+        u_gid = grant.get("user_gid", "")
+        ur_gid = grant.get("user_role_gid", "")
+        if u_gid and ur_gid:
+            user_roles_lookup.setdefault(u_gid, []).append(ur_gid)
 
     # -- Build a lookup: user_role_gid → list of acr_role_gids --
     role_gid_lookup = {}  # user_role_gid → [acr_role_gid, ...]
@@ -321,11 +347,14 @@ def build_oaa_payload(users, role_mappings, cfg):
                 if rfc_val:
                     local_user.set_property(ts_field, rfc_val)
 
-        # Resolve user's role assignments via USER_ROLE_ACR_ROLE
-        user_role_gid = user.get("default_user_role_gid")
-        if user_role_gid and user_role_gid in role_gid_lookup:
-            for acr_gid in role_gid_lookup[user_role_gid]:
-                local_user.add_role(acr_gid, apply_to_application=True)
+        # Resolve user's role assignments via USER_ROLE_GRANT → USER_ROLE_ACR_ROLE
+        assigned_acr_roles = set()
+        for ur_gid in user_roles_lookup.get(user_gid, []):
+            for acr_gid in role_gid_lookup.get(ur_gid, []):
+                assigned_acr_roles.add(acr_gid)
+        for acr_gid in assigned_acr_roles:
+            local_user.add_role(acr_gid, apply_to_application=True)
+        if assigned_acr_roles:
             users_with_roles += 1
 
         users_created += 1
@@ -458,6 +487,7 @@ def main():
         # 3. Extract data
         database = cfg["athena_database"]
         users = fetch_users(conn, database)
+        role_grants = fetch_user_role_grants(conn, database)
         role_mappings = fetch_user_role_mappings(conn, database)
 
         if not users:
@@ -465,7 +495,7 @@ def main():
             sys.exit(0)
 
         # 4. Build OAA payload
-        app = build_oaa_payload(users, role_mappings, cfg)
+        app = build_oaa_payload(users, role_grants, role_mappings, cfg)
 
         # 5. Push to Veza
         push_to_veza(cfg, app, dry_run=args.dry_run, save_json=args.save_json)
