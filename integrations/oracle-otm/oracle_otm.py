@@ -239,7 +239,7 @@ def build_oaa_payload(users, role_mappings, cfg):
     )
 
     # -- Define a placeholder permission (no real permissions modeled yet) --
-    app.add_custom_permission("assigned", [OAAPermission.NonData])
+    # app.add_custom_permission("assigned", [OAAPermission.NonData])
 
     # -- Custom user properties --
     app.property_definitions.define_local_user_property("domain_name", OAAPropertyType.STRING)
@@ -273,7 +273,7 @@ def build_oaa_payload(users, role_mappings, cfg):
 
     # -- Create local roles for each unique ACR role --
     for acr_gid, meta in all_acr_roles.items():
-        role = app.add_local_role(acr_gid, unique_id=acr_gid, permissions=["assigned"])
+        role = app.add_local_role(acr_gid, unique_id=acr_gid)
         if meta.get("domain_name"):
             role.set_property("domain_name", meta["domain_name"])
 
@@ -325,7 +325,7 @@ def build_oaa_payload(users, role_mappings, cfg):
         user_role_gid = user.get("default_user_role_gid")
         if user_role_gid and user_role_gid in role_gid_lookup:
             for acr_gid in role_gid_lookup[user_role_gid]:
-                local_user.add_role(acr_gid, apply_to_application=True)
+                local_user.add_role(acr_gid, apply_to_application=False)
             users_with_roles += 1
 
         users_created += 1
