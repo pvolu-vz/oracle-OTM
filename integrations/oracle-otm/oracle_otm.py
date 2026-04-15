@@ -325,7 +325,7 @@ def build_oaa_payload(users, role_mappings, cfg):
         user_role_gid = user.get("default_user_role_gid")
         if user_role_gid and user_role_gid in role_gid_lookup:
             for acr_gid in role_gid_lookup[user_role_gid]:
-                local_user.add_role(acr_gid, apply_to_application=False)
+                local_user.add_role(acr_gid, apply_to_application=True)
             users_with_roles += 1
 
         users_created += 1
