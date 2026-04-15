@@ -104,13 +104,16 @@ Resources:
               "field.delim": ","
               "serialization.format": ","
           Columns:
-            # 13 columns currently selected by fetch_users() in oracle_otm.py
+            # Column order must match gl_user_sample.csv exactly
             - Name: user_gid
               Type: string
               Comment: "Internal GID — unique identifier (e.g. OTM.GID_100001)"
+            - Name: username
+              Type: string
+              Comment: "Login username (e.g. jdoe) — T1.USERNAME in source query"
             - Name: user_xid
               Type: string
-              Comment: "External login ID (e.g. USR_JDOE_001)"
+              Comment: "External system ID (e.g. USR_JDOE_001)"
             - Name: domain_name
               Type: string
             - Name: first_name
@@ -127,6 +130,17 @@ Resources:
             - Name: is_locked_out
               Type: string
               Comment: "Y or N"
+            - Name: phone_number
+              Type: string
+            - Name: locale
+              Type: string
+              Comment: "e.g. en_US, es_MX"
+            - Name: time_zone
+              Type: string
+              Comment: "e.g. America/Chicago"
+            - Name: user_type
+              Type: string
+              Comment: "INTERNAL, EXTERNAL, or SERVICE"
             - Name: last_login_date
               Type: string
               Comment: "ISO timestamp string"
@@ -135,16 +149,13 @@ Resources:
               Comment: "ISO timestamp string"
             - Name: insert_date
               Type: string
-              Comment: "ISO timestamp string"
+              Comment: "ISO timestamp string — maps to INSERT_DATE / CREATION_DATE in source query"
             - Name: update_date
               Type: string
               Comment: "ISO timestamp string"
-            # 14th column — FK into user_role_acr_role.user_role_gid
-            # NOTE: oracle_otm.py:fetch_users() does not SELECT this column yet,
-            # so role assignments will show 0 until the query is fixed to include it.
-            - Name: user_role_gid
+            - Name: default_user_role_gid
               Type: string
-              Comment: "FK to user_role_acr_role.user_role_gid — not yet selected by fetch_users()"
+              Comment: "FK to user_role.user_role_gid — T1.DEFAULT_USER_ROLE_GID in source query"
 
   # ---------- Glue: USER_ROLE_ACR_ROLE table ---------------------------------
   GlueTableUserRoleAcrRole:
@@ -184,6 +195,113 @@ Resources:
               Comment: "Access Control Role XID / display name (e.g. PLANNER)"
             - Name: domain_name
               Type: string
+
+  # ---------- Glue: USER_ROLE table ------------------------------------------
+  GlueTableUserRole:
+    Type: AWS::Glue::Table
+    DependsOn: GlueDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: dtl_otm
+      TableInput:
+        Name: user_role
+        Description: Oracle OTM USER_ROLE — role definitions (synthetic lab data)
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          "skip.header.line.count": "1"
+          "classification": "csv"
+        StorageDescriptor:
+          Location: !Sub "s3://${LabPrefix}-datalake/data/user_role/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            Parameters:
+              "field.delim": ","
+              "serialization.format": ","
+          Columns:
+            # Column order must match user_role_sample.csv exactly
+            - Name: user_role_gid
+              Type: string
+              Comment: "Internal GID — PK (e.g. OTM.UROLE_001)"
+            - Name: user_role_xid
+              Type: string
+              Comment: "External role ID (e.g. UROLE_PLANNER_001)"
+            - Name: domain_name
+              Type: string
+            - Name: description
+              Type: string
+              Comment: "Human-readable role description"
+            - Name: role_type
+              Type: string
+              Comment: "STANDARD, RESTRICTED, or ADMIN"
+            - Name: is_active
+              Type: string
+              Comment: "Y or N"
+            - Name: insert_date
+              Type: string
+              Comment: "ISO timestamp string"
+            - Name: update_date
+              Type: string
+              Comment: "ISO timestamp string"
+            - Name: created_by
+              Type: string
+              Comment: "user_gid of the user who created this role"
+
+  # ---------- Glue: USER_ROLE_GRANT table ------------------------------------
+  GlueTableUserRoleGrant:
+    Type: AWS::Glue::Table
+    DependsOn: GlueDatabase
+    Properties:
+      CatalogId: !Ref AWS::AccountId
+      DatabaseName: dtl_otm
+      TableInput:
+        Name: user_role_grant
+        Description: Oracle OTM USER_ROLE_GRANT — user-to-role assignments (synthetic lab data)
+        TableType: EXTERNAL_TABLE
+        Parameters:
+          "skip.header.line.count": "1"
+          "classification": "csv"
+        StorageDescriptor:
+          Location: !Sub "s3://${LabPrefix}-datalake/data/user_role_grant/"
+          InputFormat: org.apache.hadoop.mapred.TextInputFormat
+          OutputFormat: org.apache.hadoop.hive.ql.io.HiveIgnoreKeyTextOutputFormat
+          SerdeInfo:
+            SerializationLibrary: org.apache.hadoop.hive.serde2.lazy.LazySimpleSerDe
+            Parameters:
+              "field.delim": ","
+              "serialization.format": ","
+          Columns:
+            # Column order must match user_role_grant_sample.csv exactly
+            - Name: user_role_grant_gid
+              Type: string
+              Comment: "Internal GID — PK (e.g. OTM.URG_001)"
+            - Name: user_role_grant_xid
+              Type: string
+              Comment: "External grant ID"
+            - Name: user_gid
+              Type: string
+              Comment: "FK to gl_user.user_gid"
+            - Name: user_role_gid
+              Type: string
+              Comment: "FK to user_role.user_role_gid"
+            - Name: domain_name
+              Type: string
+            - Name: is_active
+              Type: string
+              Comment: "Y or N — N means grant was revoked"
+            - Name: insert_date
+              Type: string
+              Comment: "ISO timestamp string — when the grant was created"
+            - Name: effective_date
+              Type: string
+              Comment: "Date the grant becomes effective (YYYY-MM-DD)"
+            - Name: expiry_date
+              Type: string
+              Comment: "Date the grant expires (YYYY-MM-DD); empty = no expiry"
+            - Name: granted_by
+              Type: string
+              Comment: "user_gid of the user who granted this role"
 
   # ---------- Athena: Workgroup ----------------------------------------------
   AthenaWorkgroup:
@@ -255,6 +373,8 @@ Resources:
               - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:database/dtl_otm"
               - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/dtl_otm/gl_user"
               - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/dtl_otm/user_role_acr_role"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/dtl_otm/user_role"
+              - !Sub "arn:aws:glue:${AWS::Region}:${AWS::AccountId}:table/dtl_otm/user_role_grant"
 
           - Sid: S3DataLakeRead
             Effect: Allow
@@ -323,3 +443,11 @@ Outputs:
   UserRoleAcrRoleS3Prefix:
     Description: Upload user_role_acr_role_sample.csv to this S3 prefix
     Value: !Sub "s3://${LabPrefix}-datalake/data/user_role_acr_role/"
+
+  UserRoleS3Prefix:
+    Description: Upload user_role_sample.csv to this S3 prefix
+    Value: !Sub "s3://${LabPrefix}-datalake/data/user_role/"
+
+  UserRoleGrantS3Prefix:
+    Description: Upload user_role_grant_sample.csv to this S3 prefix
+    Value: !Sub "s3://${LabPrefix}-datalake/data/user_role_grant/"

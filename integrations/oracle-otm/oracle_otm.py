@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 from datetime import datetime, timezone
+from logging.handlers import TimedRotatingFileHandler
 
 from dotenv import load_dotenv
 from oaaclient.client import OAAClient, OAAClientError
@@ -21,6 +22,33 @@ from oaaclient.templates import CustomApplication, OAAPermission, OAAPropertyTyp
 # Logging
 # ---------------------------------------------------------------------------
 log = logging.getLogger(__name__)
+
+
+def _setup_logging(log_level: str = "INFO") -> None:
+    """Configure file-only logging with hourly rotation to the logs/ folder."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(script_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%d%m%Y-%H%M")
+    script_name = os.path.splitext(os.path.basename(__file__))[0]
+    log_file = os.path.join(log_dir, f"{script_name}_{timestamp}.log")
+
+    handler = TimedRotatingFileHandler(
+        log_file,
+        when="h",
+        interval=1,
+        backupCount=24,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(
+        fmt="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    ))
+
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, log_level.upper()))
+    root.addHandler(handler)
 
 
 # ---------------------------------------------------------------------------
@@ -138,7 +166,7 @@ def fetch_users(conn, database):
         SELECT
             user_gid,
             user_xid,
-            user_role_gid,
+            default_user_role_gid,
             domain_name,
             first_name,
             last_name,
@@ -294,7 +322,7 @@ def build_oaa_payload(users, role_mappings, cfg):
                     local_user.set_property(ts_field, rfc_val)
 
         # Resolve user's role assignments via USER_ROLE_ACR_ROLE
-        user_role_gid = user.get("user_role_gid")
+        user_role_gid = user.get("default_user_role_gid")
         if user_role_gid and user_role_gid in role_gid_lookup:
             for acr_gid in role_gid_lookup[user_role_gid]:
                 local_user.add_role(acr_gid, apply_to_application=True)
@@ -402,12 +430,7 @@ Examples:
 # ---------------------------------------------------------------------------
 def main():
     args = parse_args()
-
-    logging.basicConfig(
-        level=getattr(logging, args.log_level),
-        format="%(asctime)s [%(levelname)s] %(name)s — %(message)s",
-        datefmt="%Y-%m-%d %H:%M:%S",
-    )
+    _setup_logging(args.log_level)
 
     print("=" * 60)
     print("Oracle OTM → Veza OAA Integration")

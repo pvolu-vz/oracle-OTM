@@ -62,14 +62,18 @@ done
 # ---------------------------------------------------------------------------
 GL_USER_CSV="${SAMPLES_DIR}/gl_user_sample.csv"
 ROLE_CSV="${SAMPLES_DIR}/user_role_acr_role_sample.csv"
+USER_ROLE_CSV="${SAMPLES_DIR}/user_role_sample.csv"
+USER_ROLE_GRANT_CSV="${SAMPLES_DIR}/user_role_grant_sample.csv"
 
-for f in "${GL_USER_CSV}" "${ROLE_CSV}"; do
+for f in "${GL_USER_CSV}" "${ROLE_CSV}" "${USER_ROLE_CSV}" "${USER_ROLE_GRANT_CSV}"; do
   [[ -f "$f" ]] || { echo "ERROR: Sample file not found: $f" >&2; exit 1; }
 done
 
 echo "Sample files verified:"
 echo "  ${GL_USER_CSV}"
 echo "  ${ROLE_CSV}"
+echo "  ${USER_ROLE_CSV}"
+echo "  ${USER_ROLE_GRANT_CSV}"
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -108,21 +112,34 @@ aws s3 cp "${ROLE_CSV}" \
   --region "${REGION}" \
   --profile "${PROFILE}"
 
+echo "Uploading user_role_sample.csv ..."
+aws s3 cp "${USER_ROLE_CSV}" \
+  "s3://${BUCKET}/data/user_role/user_role_sample.csv" \
+  --region "${REGION}" \
+  --profile "${PROFILE}"
+
+echo "Uploading user_role_grant_sample.csv ..."
+aws s3 cp "${USER_ROLE_GRANT_CSV}" \
+  "s3://${BUCKET}/data/user_role_grant/user_role_grant_sample.csv" \
+  --region "${REGION}" \
+  --profile "${PROFILE}"
+
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
 echo ""
 echo "Verifying uploads:"
-echo "  s3://${BUCKET}/data/gl_user/"
-aws s3 ls "s3://${BUCKET}/data/gl_user/" --region "${REGION}" --profile "${PROFILE}"
-
-echo "  s3://${BUCKET}/data/user_role_acr_role/"
-aws s3 ls "s3://${BUCKET}/data/user_role_acr_role/" --region "${REGION}" --profile "${PROFILE}"
+for prefix in gl_user user_role_acr_role user_role user_role_grant; do
+  echo "  s3://${BUCKET}/data/${prefix}/"
+  aws s3 ls "s3://${BUCKET}/data/${prefix}/" --region "${REGION}" --profile "${PROFILE}"
+done
 
 echo ""
 echo "Done. Sample data is live at:"
 echo "  s3://${BUCKET}/data/gl_user/gl_user_sample.csv"
 echo "  s3://${BUCKET}/data/user_role_acr_role/user_role_acr_role_sample.csv"
+echo "  s3://${BUCKET}/data/user_role/user_role_sample.csv"
+echo "  s3://${BUCKET}/data/user_role_grant/user_role_grant_sample.csv"
 echo ""
-echo "Next: configure your ODBC DSN and run the dry-run test."
-echo "  See aws-lab-setup/ for ODBC DSN setup instructions."
+echo "Next: update the CloudFormation stack, then run the dry-run test."
+echo "  cd aws-lab-setup && aws cloudformation deploy --stack-name <name> --template-file cloudformation.yml --capabilities CAPABILITY_IAM"

@@ -42,3 +42,35 @@ Key patterns to replicate:
 - Include a `--save-json` / `--debug` flag pair
 - Print a mapping table comment in the README showing how source entities map to OAA types (Application, Local User, Local Group, Local Role, Application Resource)
 - Use `oaaclient.client.OAAClient` to push; handle `OAAClientError` and log properly
+
+
+### Logging setup
+
+log = logging.getLogger(__name__)
+
+
+def _setup_logging(log_level: str = "INFO") -> None:
+    """Configure file-only logging with hourly rotation to the logs/ folder."""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    log_dir = os.path.join(script_dir, "logs")
+    os.makedirs(log_dir, exist_ok=True)
+
+    timestamp = datetime.now().strftime("%d%m%Y-%H%M")
+    script_name = os.path.splitext(os.path.basename(__file__))[0]
+    log_file = os.path.join(log_dir, f"{script_name}_{timestamp}.log")
+
+    handler = TimedRotatingFileHandler(
+        log_file,
+        when="h",
+        interval=1,
+        backupCount=24,
+        encoding="utf-8",
+    )
+    handler.setFormatter(logging.Formatter(
+        fmt="%(asctime)s %(levelname)-8s %(message)s",
+        datefmt="%Y-%m-%dT%H:%M:%S",
+    ))
+
+    root = logging.getLogger()
+    root.setLevel(getattr(logging, log_level.upper()))
+    root.addHandler(handler)
